@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+data/spadl_actions.parquet
+data/atomic_spadl_actions.parquet
+data/spadl_actions_with_xt.parquet
+data/spadl_actions_valued.parquet
+data/atomic_actions_valued.parquet
+catboost_info/
