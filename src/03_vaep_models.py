@@ -23,8 +23,8 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 
 def extract_features_and_labels(df_games: pd.DataFrame, df_actions: pd.DataFrame, engine_type: str = "standard"):
     """
-    逐場計算遊戲狀態特徵 (Game State Features) 與未來 10 動作進球/失球標籤 (Labels)。
-    engine_type: 'standard' (VAEP) 或 'atomic' (Atomic-VAEP)
+    Compute 3-action sliding game-state features and 10-action lookahead scoring/conceding labels per match.
+    engine_type: 'standard' (VAEP) or 'atomic' (Atomic-VAEP)
     """
     engine = VAEP(nb_prev_actions=3) if engine_type == "standard" else AtomicVAEP(nb_prev_actions=3)
     x_list, y_list, meta_list = [], [], []
@@ -46,12 +46,12 @@ def extract_features_and_labels(df_games: pd.DataFrame, df_actions: pd.DataFrame
 
     X_all = pd.concat(x_list, ignore_index=True)
 
-    # 將 AtomicVAEP 中的 Categorical / 字串欄位 (如 'pass', 'foot') 自動展開為 One-Hot 數值特徵
+    # Expand categorical or string columns (e.g., in AtomicVAEP) into one-hot numerical features
     cat_cols = X_all.select_dtypes(include=["category", "object"]).columns.tolist()
     if len(cat_cols) > 0:
         X_all = pd.get_dummies(X_all, columns=cat_cols, dtype=np.float32)
 
-    # 轉換布林與數值特徵為 float32，並清理極端值確保 XGBoost / CatBoost 相容性
+    # Cast boolean and numerical features to float32 and sanitize extreme values
     X_all = X_all.astype(np.float32).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     Y_all = pd.concat(y_list, ignore_index=True)
@@ -64,8 +64,8 @@ def extract_features_and_labels(df_games: pd.DataFrame, df_actions: pd.DataFrame
 
 def train_and_evaluate_models(X: pd.DataFrame, Y: pd.DataFrame, df_actions: pd.DataFrame, train_gids: set, framework_name: str):
     """
-    在比賽層級切分之訓練集上訓練 XGBoost 與 CatBoost，並在測試集評估 ROC-AUC、Brier Score 與 Log-Loss。
-    回傳全資料集之預測機率與評估指標清單。
+    Train XGBoost and CatBoost classifiers on the match-level training split and evaluate
+    out-of-sample ROC-AUC, Brier Score, and Log-Loss on unseen test matches.
     """
     is_train = df_actions["game_id"].isin(train_gids).values
     X_train, X_test = X[is_train], X[~is_train]
@@ -104,7 +104,7 @@ def train_and_evaluate_models(X: pd.DataFrame, Y: pd.DataFrame, df_actions: pd.D
             clf = model_fn()
             clf.fit(X_train, Y_train[target])
 
-            # 測試集預測機率與指標評估
+            # Out-of-sample probability predictions and metric evaluation
             prob_test = clf.predict_proba(X_test)[:, 1]
             auc = roc_auc_score(Y_test[target], prob_test)
             brier = brier_score_loss(Y_test[target], prob_test)
@@ -120,7 +120,7 @@ def train_and_evaluate_models(X: pd.DataFrame, Y: pd.DataFrame, df_actions: pd.D
                 "Positive_Rate_Pct": Y_test[target].mean() * 100.0,
             })
 
-            # 全資料集推論以計算所有比賽的動作價值
+            # Predict across full dataset to compute action values for all matches
             preds_all[learner_name][target] = clf.predict_proba(X)[:, 1]
 
             if target == "scores" and learner_name == "XGBoost":
@@ -131,7 +131,7 @@ def train_and_evaluate_models(X: pd.DataFrame, Y: pd.DataFrame, df_actions: pd.D
 
 def compute_vaep_per_game(df_actions: pd.DataFrame, p_scores: np.ndarray, p_concedes: np.ndarray, is_atomic: bool = False):
     """
-    逐場呼叫 formula.value()，避免跨比賽邊界相減產生誤差。
+    Compute offensive, defensive, and net VAEP action values per match to avoid cross-match boundary artifacts.
     """
     formula_mod = atomic_vaepformula if is_atomic else vaepformula
     df_temp = df_actions.copy()
@@ -157,25 +157,25 @@ def run_vaep_pipeline():
     df_spadl_raw = pd.read_parquet(os.path.join(DATA_DIR, "spadl_actions.parquet"))
     df_atomic_raw = pd.read_parquet(os.path.join(DATA_DIR, "atomic_spadl_actions.parquet"))
 
-    # 以比賽為單位切分 80% 訓練集 (132 場) 與 20% 測試集 (34 場)
+    # Stratified match-level split: 80% Train (132 matches) / 20% Test (34 matches)
     train_games, test_games = train_test_split(
         df_games, test_size=0.20, random_state=42, stratify=df_games["tournament_name"]
     )
     train_gids = set(train_games["game_id"].unique())
     print(f"[INFO] Match-level split: {len(train_games)} Train matches | {len(test_games)} Test matches")
 
-    # 1. 擷取 Standard VAEP 特徵與標籤
+    # 1. Extract Standard-VAEP features and labels
     X_std, Y_std, df_spadl_aligned = extract_features_and_labels(df_games, df_spadl_raw, engine_type="standard")
     # 將 Stage 2 算出的連續與離散 xT 對應合併過來
     df_spadl_aligned["xt_discrete"] = df_spadl_xt["xt_discrete"].values
     df_spadl_aligned["xt_continuous"] = df_spadl_xt["xt_continuous"].values
 
-    # 2. 訓練與評估 Standard VAEP (XGBoost & CatBoost)
+    # 2. Train and evaluate Standard-VAEP (XGBoost & CatBoost)
     preds_std, metrics_std, feat_imp_std = train_and_evaluate_models(
         X_std, Y_std, df_spadl_aligned, train_gids, framework_name="Standard-VAEP"
     )
 
-    # 計算每個 SPADL 動作的 VAEP 價值
+    # Compute VAEP values for each SPADL action
     for learner_Key, suffix in [("XGBoost", "xgb"), ("CatBoost", "cat")]:
         vals = compute_vaep_per_game(
             df_spadl_aligned,
@@ -189,15 +189,15 @@ def run_vaep_pipeline():
         df_spadl_aligned[f"defensive_value_{suffix}"] = vals["defensive_value"]
         df_spadl_aligned[f"vaep_value_{suffix}"] = vals["vaep_value"]
 
-    # 3. 擷取 Atomic-VAEP 特徵與標籤
+    # 3. Extract Atomic-VAEP features and labels
     X_atm, Y_atm, df_atomic_aligned = extract_features_and_labels(df_games, df_atomic_raw, engine_type="atomic")
 
-    # 4. 訓練與評估 Atomic-VAEP (XGBoost & CatBoost)
+    # 4. Train and evaluate Atomic-VAEP (XGBoost & CatBoost)
     preds_atm, metrics_atm, feat_imp_atm = train_and_evaluate_models(
         X_atm, Y_atm, df_atomic_aligned, train_gids, framework_name="Atomic-VAEP"
     )
 
-    # 計算每個 Atomic-SPADL 動作的價值
+    # Compute Atomic-VAEP values for each Atomic-SPADL action
     for learner_Key, suffix in [("XGBoost", "xgb"), ("CatBoost", "cat")]:
         vals_atm = compute_vaep_per_game(
             df_atomic_aligned,
@@ -211,11 +211,11 @@ def run_vaep_pipeline():
         df_atomic_aligned[f"defensive_value_{suffix}"] = vals_atm["defensive_value"]
         df_atomic_aligned[f"vaep_value_{suffix}"] = vals_atm["vaep_value"]
 
-    # 5. 儲存評估指標與動作估值資料表
+    # 5. Save out-of-sample evaluation metrics and valued action tables
     df_metrics = pd.DataFrame(metrics_std + metrics_atm)
     df_metrics.to_csv(os.path.join(MODEL_DIR, "vaep_model_benchmarks.csv"), index=False)
 
-    # 將動作方向轉為標準 Left-to-Right 後儲存供 Streamlit 視覺化使用
+    # Standardize play direction to Left-to-Right for downstream pitch visualization
     import socceraction.spadl as spadl
     import socceraction.atomic.spadl as atomicspadl
 
@@ -236,7 +236,7 @@ def run_vaep_pipeline():
     df_spadl_final.to_parquet(os.path.join(DATA_DIR, "spadl_actions_valued.parquet"), index=False)
     df_atomic_final.to_parquet(os.path.join(DATA_DIR, "atomic_actions_valued.parquet"), index=False)
 
-    # 6. 彙整球員全維度評價總表 (Player Summary Ratings)
+    # 6. Compile comprehensive player summary ratings table
     player_meta = (
         df_players.groupby("player_id")
         .agg(
@@ -247,7 +247,6 @@ def run_vaep_pipeline():
         .reset_index()
     )
 
-    # 找出每位球員最常代表的國家隊
     player_team = (
         df_players.merge(df_teams, on="team_id", how="left")
         .groupby("player_id")["team_name"]
@@ -303,7 +302,7 @@ def run_vaep_pipeline():
 
     df_summary.to_parquet(os.path.join(DATA_DIR, "player_summary_ratings.parquet"), index=False)
 
-    # 7. 繪製高解析度學術圖表 Figure 2: Multi-Model Valuation Benchmark
+    # 7. Generate publication Figure 2: Multi-Model Action Valuation Benchmark
     print("[INFO] Generating publication Figure 2: xT vs. VAEP vs. Atomic-VAEP Benchmark...")
     qual = df_summary[df_summary["total_minutes"] >= 450].copy()
 
@@ -366,7 +365,7 @@ def run_vaep_pipeline():
     plt.savefig(fig2_path, dpi=300, bbox_inches="tight")
     plt.close()
 
-    # 8. 印出完整實驗結果供技術報告使用
+    # 8. Print benchmark metrics and leaderboards
     r_xt_vaep = np.corrcoef(qual["xt_cont_p90"], qual["vaep_xgb_p90"])[0, 1]
     r_vaep_atomic = np.corrcoef(qual["vaep_xgb_p90"], qual["atomic_vaep_xgb_p90"])[0, 1]
     r_xgb_cat = np.corrcoef(qual["vaep_xgb_p90"], qual["vaep_cat_p90"])[0, 1]

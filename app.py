@@ -12,12 +12,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# 自動鎖定 app.py 所在的專案根目錄，避免終端機工作目錄不同導致 FileNotFoundError
+# Resolve project root directory relative to app.py to prevent FileNotFoundError across working directories
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 
-# 若先前在使用者家目錄下執行過腳本，自動支援備援路徑讀取
+# Fallback to user home directory if data was generated outside the repository folder
 if not os.path.exists(os.path.join(DATA_DIR, "games.parquet")) and os.path.exists(os.path.expanduser("~/data/games.parquet")):
     DATA_DIR = os.path.expanduser("~/data")
     MODEL_DIR = os.path.expanduser("~/models")

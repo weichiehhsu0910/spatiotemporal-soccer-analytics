@@ -22,7 +22,7 @@ def generate_case_study_figure():
     team_map = dict(zip(df_teams["team_id"], df_teams["team_name"]))
     player_map = df_players.groupby("player_id")["player_name"].first().to_dict()
 
-    # 鎖定 2022 世界盃決賽: Argentina vs France (若無則選取總 VAEP 最高之賽事)
+    # Select the 2022 FIFA World Cup Final: Argentina vs. France
     df_games["home_name"] = df_games["home_team_id"].map(team_map)
     df_games["away_name"] = df_games["away_team_id"].map(team_map)
 
@@ -41,24 +41,24 @@ def generate_case_study_figure():
     m_actions["player_name"] = m_actions["player_id"].map(player_map).fillna("Unknown")
     m_actions["team_name"] = m_actions["team_id"].map(team_map)
 
-    # 計算比賽累積時間 (分鐘)
+    # Compute continuous match minute across regular and extra time periods
     period_offsets = {1: 0.0, 2: 45.0, 3: 90.0, 4: 105.0, 5: 120.0}
     m_actions["match_minute"] = (
         m_actions["period_id"].map(period_offsets).fillna(0.0) + m_actions["time_seconds"] / 60.0
     )
-    # 排除點球大戰 (period_id == 5) 以呈現正規與延長賽 120 分鐘動態
+    # Exclude penalty shootouts (period_id == 5) to visualize 120-minute open/set-piece dynamics
     m_reg = m_actions[m_actions["period_id"] <= 4].copy()
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 6.5), dpi=300)
 
-    # 左圖：兩隊全場累積 VAEP 攻防價值時間軸 (Cumulative Action-Value Timeline)
+    # Left panel: Cumulative VAEP momentum timeline for both teams
     ax0 = axes[0]
     for tid, tname, col in [(h_id, h_name, "#2563EB"), (a_id, a_name, "#DC2626")]:
         t_df = m_reg[m_reg["team_id"] == tid].sort_values("action_id")
         cum_vaep = t_df["vaep_value_xgb"].cumsum()
         ax0.step(t_df["match_minute"], cum_vaep, where="post", label=f"{tname} (Cum. VAEP)", color=col, linewidth=2.2)
 
-        # 標註進球事件
+        # Annotate goal-scoring events
         goals = t_df[(t_df["type_name"].isin(["shot", "shot_penalty", "shot_freekick"])) & (t_df["result_name"] == "goal")]
         for _, g_row in goals.iterrows():
             g_min = g_row["match_minute"]
@@ -73,7 +73,7 @@ def generate_case_study_figure():
     ax0.grid(True, linestyle="--", alpha=0.5)
     ax0.legend(loc="upper left", fontsize=9.5)
 
-    # 右圖：球場高價值傳球推進軌跡渲染 (Top 15 Progressive Ball-Move Actions by Continuous xT)
+    # Right panel: Pitch trajectory renderer for top 16 progressive actions by Continuous xT
     ax1 = axes[1]
     pitch = Pitch(pitch_type="custom", pitch_length=105, pitch_width=68, pitch_color="#0F172A", line_color="#94A3B8", line_zorder=2)
     pitch.draw(ax=ax1)

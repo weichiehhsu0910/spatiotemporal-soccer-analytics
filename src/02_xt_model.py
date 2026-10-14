@@ -20,18 +20,19 @@ FIELD_WIDTH = 68.0
 
 def build_continuous_interpolator(xt_surface: np.ndarray, sigma: float = 1.0):
     """
-    對離散 xT 矩陣進行 2D 高斯核平滑，並建立連續座標雙線性插值器。
-    xt_surface shape: (w, l) = (12, 16) -> 對應 (y 軸寬度, x 軸長度)
+    Apply 2D Gaussian kernel smoothing to the discrete xT matrix and construct
+    a continuous 2D bilinear interpolator over the pitch coordinates.
+    xt_surface shape: (w, l) = (12, 16) -> (y-axis width, x-axis length)
     """
-    # 1. 2D 高斯核平滑 (Gaussian Kernel Smoothing)
+    # 1. 2D Gaussian kernel smoothing
     xt_smoothed = gaussian_filter(xt_surface, sigma=sigma, mode="nearest")
 
     n_y, n_x = xt_smoothed.shape
-    # 計算每個網格中心點的實際球場座標 (y: 0~68m, x: 0~105m)
+    # Compute spatial cell centroids across pitch coordinates (y: 0~68m, x: 0~105m)
     y_centers = np.linspace(FIELD_WIDTH / (2 * n_y), FIELD_WIDTH - FIELD_WIDTH / (2 * n_y), n_y)
     x_centers = np.linspace(FIELD_LENGTH / (2 * n_x), FIELD_LENGTH - FIELD_LENGTH / (2 * n_x), n_x)
 
-    # 2. 建立二維連續插值器 (bounds_error=False, fill_value=None 支援邊界外推)
+    # # 2. Construct 2D continuous bilinear interpolator with boundary extrapolation
     interpolator = RegularGridInterpolator(
         (y_centers, x_centers),
         xt_smoothed,
@@ -48,7 +49,7 @@ def run_xt_pipeline():
     df_teams = pd.read_parquet(os.path.join(DATA_DIR, "teams.parquet"))
     df_games = pd.read_parquet(os.path.join(DATA_DIR, "games.parquet"))
 
-    # 1. 將所有比賽動作方向標準化為「由左至右 (x: 0 -> 105)」
+    # 1. Standardize play direction for all matches from left to right (x: 0 -> 105)
     print("[INFO] Standardizing play direction (Left-to-Right) across 166 matches...")
     ltr_list = []
     for game_id, group in df_spadl.groupby("game_id", sort=False):
@@ -57,7 +58,7 @@ def run_xt_pipeline():
         ltr_list.append(group_ltr)
     df_actions_ltr = pd.concat(ltr_list, ignore_index=True)
 
-    # 2. 訓練標準 16x12 離散馬可夫決策過程 (MDP) xT 模型
+    # 2. Fit standard 16x12 discrete Markov Decision Process (MDP) xT model via value iteration
     print("[INFO] Fitting Markov Decision Process (MDP) Expected Threat (xT) model...")
     xt_model = xthreat.ExpectedThreat(l=16, w=12, eps=1e-5)
     xt_model.fit(df_actions_ltr)
@@ -65,22 +66,22 @@ def run_xt_pipeline():
     xt_discrete_matrix = xt_model.xT
     num_iterations = len(xt_model.heatmaps)
 
-    # 3. 進行 2D 高斯平滑與連續空間插值器建置
+    # 3. Apply 2D Gaussian smoothing and construct continuous spatial interpolator
     print("[INFO] Applying 2D Gaussian Kernel Smoothing (sigma=0.85) & Bilinear Interpolation...")
     xt_smoothed_matrix, cont_interp = build_continuous_interpolator(xt_discrete_matrix, sigma=0.85)
 
-    # 儲存模型矩陣
+    # Save discrete and smoothed xT surface matrices
     np.save(os.path.join(MODEL_DIR, "xt_discrete_matrix.npy"), xt_discrete_matrix)
     np.save(os.path.join(MODEL_DIR, "xt_smoothed_matrix.npy"), xt_smoothed_matrix)
 
-    # 4. 對所有成功推進動作 (Successful Move Actions) 計算離散與連續 xT 價值
+    # 4. Evaluate discrete and continuous xT across all successful ball-progressing actions
     print("[INFO] Rating ball-progressing actions (Discrete vs. Continuous xT)...")
     df_mov = xthreat.get_successful_move_actions(df_actions_ltr).copy()
 
-    # 4a. 離散 xT 評分 (use_interpolation=False 避開舊版 interp2d 問題)
+    # 4a. Discrete grid xT valuation
     df_mov["xt_discrete"] = xt_model.rate(df_mov, use_interpolation=False)
 
-    # 4b. 連續平滑 xT 評分
+    # 4b. Continuous smoothed xT valuation
     start_pts = np.column_stack([
         np.clip(df_mov["start_y"].values, 0.0, FIELD_WIDTH),
         np.clip(df_mov["start_x"].values, 0.0, FIELD_LENGTH),
@@ -93,21 +94,21 @@ def run_xt_pipeline():
     df_mov["xt_end_cont"] = cont_interp(end_pts)
     df_mov["xt_continuous"] = df_mov["xt_end_cont"] - df_mov["xt_start_cont"]
 
-    # 將評分合併回完整 SPADL 資料表 (非成功移動動作之 xT 設為 0.0)
+    # Merge ratings back into the main SPADL DataFrame (non-move actions receive 0.0 xT)
     df_actions_ltr["xt_discrete"] = 0.0
     df_actions_ltr["xt_continuous"] = 0.0
     df_actions_ltr.loc[df_mov.index, "xt_discrete"] = df_mov["xt_discrete"]
     df_actions_ltr.loc[df_mov.index, "xt_continuous"] = df_mov["xt_continuous"]
 
-    # 儲存附帶 xT 分數的動作資料表，供後續與 VAEP 對照及 Streamlit 讀取
+    # Save SPADL actions enriched with xT values
     df_actions_ltr.to_parquet(os.path.join(DATA_DIR, "spadl_actions_with_xt.parquet"), index=False)
 
-    # 5. 繪製高解析度學術圖表：離散 xT vs. 連續高斯平滑 xT 熱區對比圖
+    # 5. Generate publication figure comparing discrete vs. continuous Gaussian-smoothed xT surfaces
     print("[INFO] Generating publication figure: Discrete vs. Continuous xT Surface...")
     fig, axes = plt.subplots(1, 2, figsize=(15, 6), dpi=300)
     pitch = Pitch(pitch_type="custom", pitch_length=105, pitch_width=68, line_zorder=2, line_color="#1E293B")
 
-    # 左圖：16x12 離散網格
+    # Left panel: 16x12 discrete grid
     pitch.draw(ax=axes[0])
     im0 = axes[0].imshow(
         xt_discrete_matrix,
@@ -120,7 +121,7 @@ def run_xt_pipeline():
     axes[0].set_title("A. Standard Discrete xT Surface (16x12 Grid, Value Iteration)", fontsize=12, weight="bold")
     plt.colorbar(im0, ax=axes[0], fraction=0.035, pad=0.03, label="Expected Threat (xT)")
 
-    # 右圖：連續高斯平滑表面 (以 210x136 細網格渲染連續插值結果)
+    # Right panel: Continuous Gaussian-smoothed surface rendered over a 210x136 fine mesh
     pitch.draw(ax=axes[1])
     fine_y = np.linspace(0, FIELD_WIDTH, 136)
     fine_x = np.linspace(0, FIELD_LENGTH, 210)
@@ -145,9 +146,9 @@ def run_xt_pipeline():
     plt.savefig(fig_path, dpi=300, bbox_inches="tight")
     plt.close()
 
-    # 6. 彙整球員累積與每 90 分鐘 xT 排行榜
+    # 6. Aggregate cumulative and per-90 player xT leaderboards
     player_minutes = df_players.groupby(["player_id", "player_name"])["minutes_played"].sum().reset_index()
-    # 若單一 player_id 有不同名字拼寫，取最常見名稱
+    
     player_minutes = (
         df_players.groupby("player_id")
         .agg(player_name=("player_name", "first"), total_minutes=("minutes_played", "sum"))
