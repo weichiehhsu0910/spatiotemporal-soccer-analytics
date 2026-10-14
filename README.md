@@ -1,5 +1,12 @@
 # Spatiotemporal Soccer Analytics: Continuous xT & (Atomic-)VAEP Engine
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)]([https://spatiotemporal-soccer-analytics-d9ozvkrzmqvnoncw2xy2vw.streamlit.app/])
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+> **Live Interactive Dashboard:** [https://你的app名稱.streamlit.app](https://你的app名稱.streamlit.app)  
+> Access the deployed web application to inspect continuous xT pitch surfaces, simulate real-time pass threat ($\Delta\text{xT}$), and benchmark (Atomic-)VAEP valuations across 166 international matches.
+
 An end-to-end spatiotemporal soccer analytics framework and interactive tactical web application built on **615,225 raw match events** (**361,378 SPADL actions** and **542,800 Atomic-SPADL actions**) across **166 matches** from the **FIFA World Cup 2022**, **UEFA Euro 2024**, and **UEFA Euro 2020** (Hudl StatsBomb Open Data).
 
 ---
